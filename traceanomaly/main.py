@@ -54,41 +54,70 @@ class ExpConfig(MLConfig):
 
     norm_clip = 10
 
-
+# 这个函数是一个深度Q网络（DQN）的一部分，它是一种使用深度神经网络来估计Q值函数的强化学习算法。Q值函数表示在给定状态下采取不同动作的期望回报。
+# 这个函数的目的是根据输入的状态x（例如屏幕差分图像）来生成一个隐变量z，然后用z来预测每个动作的Q值。¹²
+#
+# 这个函数的参数和步骤如下：
+#
+# - x: 输入状态，可以是任意形状的张量。
+# - posterior_flow: 一个可选的正向传播流，用于对z进行变换，以提高其表达能力和灵活性。
+# - observed: 一个可选的字典，用于指定观察到的变量和它们的值。
+# - n_z: 一个可选的整数，用于指定要生成的z样本的数量。
+#
+# - net: 一个贝叶斯网络对象，用于存储变量和分布。
+# - h_x: 一个隐藏层特征，通过两层全连接层和leaky relu激活函数从x中提取。
+# - z_mean: 一个张量，表示z的均值，通过一层全连接层从h_x中计算。
+# - z_std: 一个张量，表示z的标准差，通过一层全连接层和softplus函数从h_x中计算。
+# - z: 一个随机变量，表示z的后验分布，通过正态分布和posterior_flow从z_mean和z_std中采样，并添加到net中。
+#
+# 这个函数返回net对象，可以用于进一步计算Q值或进行优化。³⁴
 @spt.global_reuse
 @add_arg_scope
 def q_net(x, posterior_flow, observed=None, n_z=None):
+    # 创建一个贝叶斯网络对象，用于存储变量和分布
     net = spt.BayesianNet(observed=observed)
 
     # compute the hidden features
+    # 计算隐藏层特征，使用arg_scope来设置全连接层的默认参数
     with arg_scope([spt.layers.dense],
                    activation_fn=tf.nn.leaky_relu,
                    kernel_regularizer=spt.layers.l2_regularizer(config.l2_reg)):
+        # 将输入状态x转换为浮点类型
         h_x = tf.to_float(x)
+        # 通过一个全连接层，输出维度为500
         h_x = spt.layers.dense(h_x, 500)
+        # 再通过一个全连接层，输出维度为500
         h_x = spt.layers.dense(h_x, 500)
 
     # sample z ~ q(z|x)
+    # 计算z的均值，通过一个全连接层，输出维度为config.z_dim
     z_mean = spt.layers.dense(h_x, config.z_dim, name='z_mean')
+    # 计算z的标准差，通过一个全连接层和softplus函数，输出维度为config.z_dim，并加上一个很小的常数避免数值问题
     z_std = 1e-4 + tf.nn.softplus(
         spt.layers.dense(h_x, config.z_dim, name='z_std'))
+    # 从正态分布中采样z，并添加到贝叶斯网络中，作为一个随机张量
+    # n_samples参数表示要生成的样本数量，group_ndims参数表示要将最后几个维度视为一个事件，flow参数表示要对z进行的变换
     z = net.add('z', spt.Normal(mean=z_mean, std=z_std), n_samples=n_z,
                 group_ndims=1, flow=posterior_flow)
-
+    # 返回贝叶斯网络对象
     return net
 
 
 @spt.global_reuse
 @add_arg_scope
 def p_net(observed=None, n_z=None):
+    # 创建一个贝叶斯网络对象，用于存储变量和分布
     net = spt.BayesianNet(observed=observed)
 
     # sample z ~ p(z)
+    # 从标准正态分布中采样z，并添加到贝叶斯网络中，作为一个随机张量
+    # n_samples参数表示要生成的样本数量，group_ndims参数表示要将最后一个维度视为一个事件
     z = net.add('z', spt.Normal(mean=tf.zeros([1, config.z_dim]),
                                 logstd=tf.zeros([1, config.z_dim])),
                 group_ndims=1, n_samples=n_z)
 
     # compute the hidden features
+    # 计算隐藏层特征，使用arg_scope来设置全连接层的默认参数
     with arg_scope([spt.layers.dense],
                    activation_fn=tf.nn.leaky_relu,
                    kernel_regularizer=spt.layers.l2_regularizer(config.l2_reg)):
@@ -97,24 +126,35 @@ def p_net(observed=None, n_z=None):
         h_z = spt.layers.dense(h_z, 500)
 
     # sample x ~ p(x|z)
+    # 从正态分布中采样x，并添加到贝叶斯网络中，作为一个随机张量
+    # x的均值和标准差由h_z通过全连接层计算得到
     x_mean = spt.layers.dense(h_z, config.x_dim, name='x_mean')
     x_std = 1e-4 + tf.nn.softplus(
         spt.layers.dense(h_z, config.x_dim, name='x_std'))
     x = net.add('x', spt.Normal(mean=x_mean, std=x_std), group_ndims=1)
 
+    # 返回贝叶斯网络对象
     return net
 
 
+# x1是隐变量z的一部分，n2是隐变量z的另一部分的维度
+# 这个函数的作用是根据x1来生成对应于另一部分数据的平移和缩放参数，从而实现Real NVP模型中的coupling layer。
+# Real NVP模型是一种基于normalizing flow的生成模型，可以通过一系列可逆的仿射变换将复杂分布转化为简单分布，并且可以直接计算概率密度和行列式雅可比。
 def coupling_layer_shift_and_scale(x1, n2):
     # compute the hidden features
+    # 计算隐藏层特征，使用arg_scope来设置全连接层的默认参数
+    # 激活函数为leaky_relu，权重正则化为L2正则化
     with arg_scope([spt.layers.dense],
                    activation_fn=tf.nn.leaky_relu,
                    kernel_regularizer=spt.layers.l2_regularizer(config.l2_reg)):
+        # 将x1作为输入
         h = x1
+        # 通过多个全连接层，输出维度为500
         for _ in range(config.n_rnvp_hidden_layers):
             h = spt.layers.dense(h, 500)
 
     # compute shift and scale
+    # 计算平移和缩放参数，通过全连接层，输出维度为n2，并初始化为零
     shift = spt.layers.dense(
         h, n2, kernel_initializer=tf.zeros_initializer(),
         bias_initializer=tf.zeros_initializer(), name='shift'
@@ -123,6 +163,7 @@ def coupling_layer_shift_and_scale(x1, n2):
         h, n2, kernel_initializer=tf.zeros_initializer(),
         bias_initializer=tf.zeros_initializer(), name='scale'
     )
+    # 返回平移和缩放参数
     return shift, scale
 
 

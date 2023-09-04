@@ -62,6 +62,10 @@ def normalization(matrix, mean, std):
     n_mat = np.where(n_mat<0.00001, -1, (n_mat - mean) / std)
     return n_mat
 
+# 这个函数的作用是读取三个文件，分别是train_file、normal_file、abnormal_file，然后对它们进行归一化处理，最后将它们拼接起来并返回。
+# 其中，train_file是训练集文件，normal_file是正常数据集文件，abnormal_file是异常数据集文件。函数中的read_raw_vector()函数用于读取文件，
+# get_mean_std()函数用于计算均值和标准差，normalization()函数用于归一化处理。最后返回的是三个元组，分别是训练集、测试集和测试流。其中训练集
+# 包含了训练数据和标签，测试集包含了测试数据和标签，测试流包含了两个流。
 def get_data_vae(train_file, normal_file, abnormal_file):
     _, train_raw, valid_columns = read_raw_vector(train_file)
     flows1, normal_raw, _ = read_raw_vector(normal_file, valid_columns, shuffle=False)
